@@ -190,8 +190,9 @@ void onMqttMessage(int messageSize) {
     tbuf[size]=NULL;
     if (verbosity > 4) Serial.print(String(tbuf));
     if (verbosity > 4) Serial.println();
-    //set number based on input
-    f_SoC = String(tbuf).toFloat();
+    //set number based on input, clamped so a malformed/out-of-range publish
+    //  (e.g. "1000") can't overflow lit_leds past NUM_LEDS in loop()
+    f_SoC = constrain(String(tbuf).toFloat(), 0.0, 100.0);
     if (trace) {Serial.print("f_SoC = "); Serial.println(f_SoC,3);}
   }
   if(topic.equals(subtopic2)){
@@ -235,7 +236,7 @@ unsigned long currentTime = millis();
 void loop() {
 	// First slide the led in one direction
 	if (f_SoC != last_SoC_drawn){
-		lit_leds = (uint8_t) (40 * f_SoC/100);
+		lit_leds = (uint8_t) constrain(40 * f_SoC/100, 0, NUM_LEDS); //defense in depth: never write past leds[] even if f_SoC's clamp is ever bypassed
 		for(int i = 0; i < NUM_LEDS; i++) {
 			// Set the i'th led to red
 			leds[i] = CRGB::DarkRed;

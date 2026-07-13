@@ -101,6 +101,19 @@ fresh Home Assistant update.
   and dead commented-out lines — same style of cleanup done on the
   sibling project, and likely from the same original boilerplate given
   the identical unused-variable names.
+- **Critical (found in a 2026-07-13 security pass): out-of-bounds write
+  to `leds[]` from an unclamped `Battery/SoC` value.** `f_SoC` was set
+  straight from the MQTT payload with no range check, and `lit_leds`
+  (`= 40 * f_SoC/100`) was used as a loop bound with no check against
+  `NUM_LEDS` either. A single published value outside 0–100 (e.g. `"1000"`
+  → `lit_leds` wraps to `144` after the `uint8_t` cast) made the fill
+  loop write up to 104 elements past the end of the real 40-element
+  `leds[]` array — memory corruption triggerable by one MQTT message, no
+  authentication beyond the broker connection itself. Fixed with clamps
+  at both the trust boundary (`f_SoC` constrained to `[0,100]` in
+  `onMqttMessage`) and the point of use (`lit_leds` constrained to
+  `[0,NUM_LEDS]` in `loop()`, defense in depth in case the first clamp is
+  ever bypassed by a future edit).
 
 ## Known rough edges still open (not fixed here)
 
