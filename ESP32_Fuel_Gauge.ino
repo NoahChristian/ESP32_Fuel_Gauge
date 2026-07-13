@@ -231,67 +231,70 @@ void onMqttMessage(int messageSize) {
 
 } //onMqttMessage
 
-unsigned long currentTime = millis();
+//Non-blocking charge/discharge sweep animation state. Replaces the old delay()-based
+//  version, which blocked loop() (and therefore mqttClient.poll()) for up to ~1.6s per
+//  sweep -- during most of an active charge/discharge cycle, incoming MQTT messages just
+//  sat unprocessed. Same visual result (same colors, same 20ms-per-LED pacing, same sweep
+//  direction), but loop() now returns every pass instead of blocking inside it.
+int anim_i = -1;          //current LED index mid-sweep; -1 = not running / needs (re)start
+uint8_t anim_step = 0;    //0 = about to light anim_i, 1 = about to restore it and advance
+int anim_dir_state = 0;   //currentState this sweep belongs to, so a charge<->discharge flip restarts cleanly
+unsigned long anim_last_ms = 0;
+const unsigned long ANIM_STEP_MS = 20; //matches the original delay(20) per phase
+
+CRGB baseColorFor(int i) {
+  return (i < lit_leds) ? CRGB::MidnightBlue : CRGB::DarkRed;
+}
 
 void loop() {
 	// First slide the led in one direction
 	if (f_SoC != last_SoC_drawn){
 		lit_leds = (uint8_t) constrain(NUM_LEDS * f_SoC/100, 0, NUM_LEDS); //derives from NUM_LEDS (currently 40) instead of a hardcoded literal, so this stays correct if the strip length ever changes; constrain() is still defense in depth against f_SoC's clamp ever being bypassed
 		for(int i = 0; i < NUM_LEDS; i++) {
-			// Set the i'th led to red
-			leds[i] = CRGB::DarkRed;
-		}
-		for(int i = 0; i < lit_leds; i++) {
-			// Set the i'th led to red
-			leds[i] = CRGB::MidnightBlue;
+			if (!(anim_step == 1 && i == anim_i)) leds[i] = baseColorFor(i); //leave a currently-highlighted LED alone; the animation restores it to the fresh base color on its next step
 		}
 		FastLED.show();
 		last_SoC_drawn = f_SoC;
 	}
-	if (currentState == 1){
-		//charging
-		for(int i = 0; i < NUM_LEDS; i++) {
-			// Set the i'th led to red
-			CRGB oldcolor = leds[i];
-			leds[i] = CRGB::Yellow;
-			FastLED.show();
-			delay(20);
-			leds[i]=oldcolor;
-			FastLED.show();
-			delay(20);
+
+	if (currentState == 1 || currentState == -1){
+		if (anim_i == -1 || anim_dir_state != currentState){
+			//(re)start the sweep from the correct end; restore any LED left mid-highlight by a direction flip
+			if (anim_step == 1 && anim_i >= 0) { leds[anim_i] = baseColorFor(anim_i); FastLED.show(); }
+			anim_i = (currentState == 1) ? 0 : NUM_LEDS - 1;
+			anim_step = 0;
+			anim_dir_state = currentState;
+			anim_last_ms = millis();
 		}
-		FastLED.show();
-	}
-
-	if (currentState == -1){
-		//discharging
-		for(int i = (NUM_LEDS-1); i >= 0; i--) {
-			// Set the i'th led to red
-			CRGB oldcolor = leds[i];
-			leds[i] = CRGB::Amethyst;
-			FastLED.show();
-			delay(20);
-			leds[i]=oldcolor;
-			FastLED.show();
-			delay(20);
-
+		if (millis() - anim_last_ms >= ANIM_STEP_MS){
+			anim_last_ms = millis();
+			if (anim_step == 0){
+				//Yellow while charging, Amethyst while discharging
+				leds[anim_i] = (currentState == 1) ? CRGB::Yellow : CRGB::Amethyst;
+				FastLED.show();
+				anim_step = 1;
+			} else {
+				leds[anim_i] = baseColorFor(anim_i);
+				FastLED.show();
+				anim_step = 0;
+				anim_i += (currentState == 1) ? 1 : -1;
+				if (anim_i >= NUM_LEDS) anim_i = 0;
+				if (anim_i < 0) anim_i = NUM_LEDS - 1;
+			}
 		}
-		FastLED.show();
+	} else if (anim_i != -1) {
+		//went Idle mid-sweep: restore whatever LED was highlighted and stop animating
+		if (anim_step == 1) { leds[anim_i] = baseColorFor(anim_i); FastLED.show(); }
+		anim_i = -1;
 	}
 
-	unsigned long now = millis();
-	currentTime = millis();
-	//wait a half a second and poll while going
-	while (now < (currentTime+500) ){
-		mqttClient.poll();
-		delay(10);
-		now = millis();
+	mqttClient.poll();
+
+	if (f_bright != last_bright){
+		FastLED.setBrightness((uint8_t) f_bright*2.55);
+		last_bright = f_bright;
 	}
-  if (f_bright != last_bright){
-    FastLED.setBrightness((uint8_t) f_bright*2.55);
-    last_bright = f_bright;
-  }
-	currentTime=millis();
-	
+
+	delay(1); //small yield now that loop() is otherwise unthrottled
 } //loop
 

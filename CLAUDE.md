@@ -45,32 +45,35 @@ battery SoC/charging-state data is already flowing through MQTT.
 
 ## Runtime model
 
-Single-threaded `loop()`, but unlike the sibling power-controller project
-this one **does block**, deliberately, to drive LED sweep animations:
+Single-threaded `loop()`, fully non-blocking as of the 2026-07-13
+animation rewrite (see below) — no `delay()` longer than 1ms anywhere in
+the steady-state loop:
 
-1. If `f_SoC` changed since the last redraw, recompute how many of the 40
-   LEDs should be lit (`blue = 40 * f_SoC / 100`) and redraw: unlit
-   portion `DarkRed`, lit portion `MidnightBlue`.
-2. If `currentState == 1` (set by `"Charging"`), run a ~1.6s blocking
-   forward sweep (LED 0→39, `Yellow`, 20ms per LED) — matches the
-   README's "charging = yellow, sweeps upward."
-3. If `currentState == -1` (set by `"Discharging"`), run the same sweep
-   backward (39→0, `Amethyst`) — README's "discharging = purple, sweeps
-   downward."
-4. `currentState == 0` ("Idle") runs no animation — matches the README's
-   "no activity, no animation."
-5. A trailing `while` loop polls MQTT for ~500ms before the next `loop()`
-   iteration.
-6. If `f_bright` changed, update `FastLED.setBrightness()`.
+1. If `f_SoC` changed since the last redraw, recompute how many of the
+   `NUM_LEDS` LEDs should be lit and redraw: unlit portion `DarkRed`, lit
+   portion `MidnightBlue` (via `baseColorFor(i)`), skipping whichever LED
+   is currently mid-highlight from the sweep animation below so it isn't
+   stomped.
+2. If `currentState == 1` (`"Charging"`) or `== -1` (`"Discharging"`), a
+   small state machine (`anim_i`/`anim_step`/`anim_last_ms`) advances the
+   sweep by one phase (light the current LED, or restore it and move to
+   the next) every `ANIM_STEP_MS` (20ms) — matches the original's
+   per-LED timing exactly, just non-blocking. Forward (0→`NUM_LEDS`-1,
+   `Yellow`) while charging, backward (`NUM_LEDS`-1→0, `Amethyst`) while
+   discharging, matching the README. A direction flip or a transition to
+   Idle mid-sweep restores whatever LED was highlighted before resetting.
+3. `mqttClient.poll()` runs every single `loop()` pass, unconditionally.
+4. If `f_bright` changed, update `FastLED.setBrightness()`.
+5. A 1ms `delay()` at the end of `loop()` is the only throttling — purely
+   a yield, not a rate limiter.
 
-Net effect: whenever the battery is actively charging or discharging (the
-common case, not an edge case, in a solar+battery+grid-arbitrage setup),
-each `loop()` pass takes roughly 1.6s (animation) + 500ms (poll) ≈ up to
-~2.1s; `mqttClient.poll()` is only called during the trailing 500ms
-window, so incoming MQTT messages can sit unprocessed for up to ~1.6s
-mid-animation. Not long enough to trip a typical broker's keepalive on
-its own, but worth knowing if this device ever seems slow to reflect a
-fresh Home Assistant update.
+Previously (pre-2026-07-13) the charge/discharge sweep used nested
+`delay(20)` calls and blocked `loop()` for up to ~1.6s per full sweep,
+during which `mqttClient.poll()` never ran — since charging/discharging
+is the common case in a solar+battery+grid-arbitrage setup, not an edge
+case, MQTT updates could sit unprocessed for the majority of the device's
+runtime. The rewrite produces the same visual animation with `loop()`
+returning every pass instead.
 
 ## Known issues found and fixed here
 
