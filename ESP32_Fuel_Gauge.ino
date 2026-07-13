@@ -192,7 +192,7 @@ void onMqttMessage(int messageSize) {
     if (verbosity > 4) Serial.println();
     //set number based on input, clamped so a malformed/out-of-range publish
     //  (e.g. "1000") can't overflow lit_leds past NUM_LEDS in loop()
-    f_SoC = constrain(String(tbuf).toFloat(), 0.0, 100.0);
+    f_SoC = constrain(atof(tbuf), 0.0, 100.0); //atof avoids a heap-allocating String just to parse a float
     if (trace) {Serial.print("f_SoC = "); Serial.println(f_SoC,3);}
   }
   if(topic.equals(subtopic2)){
@@ -225,7 +225,7 @@ void onMqttMessage(int messageSize) {
     if (verbosity > 4) Serial.print(String(tbuf));
     if (verbosity > 4) Serial.println();
     //set number based on input
-    f_bright = String(tbuf).toFloat();
+    f_bright = atof(tbuf); //atof avoids a heap-allocating String just to parse a float
     if (trace) {Serial.print("f_bright = "); Serial.println(f_bright,3);}
   }
 
@@ -250,37 +250,33 @@ void loop() {
 	}
 	if (currentState == 1){
 		//charging
-		for(int j=0; j<1; j++){
-			for(int i = 0; i < NUM_LEDS; i++) {
-				// Set the i'th led to red
-				CRGB oldcolor = leds[i];
-				leds[i] = CRGB::Yellow;
-				FastLED.show();
-				delay(20);
-				leds[i]=oldcolor;
-				FastLED.show();
-				delay(20);
-			}
+		for(int i = 0; i < NUM_LEDS; i++) {
+			// Set the i'th led to red
+			CRGB oldcolor = leds[i];
+			leds[i] = CRGB::Yellow;
 			FastLED.show();
+			delay(20);
+			leds[i]=oldcolor;
+			FastLED.show();
+			delay(20);
 		}
+		FastLED.show();
 	}
 
 	if (currentState == -1){
 		//discharging
-		for(int j=0; j<1; j++){
-			for(int i = (NUM_LEDS-1); i >= 0; i--) {
-				// Set the i'th led to red
-				CRGB oldcolor = leds[i];
-				leds[i] = CRGB::Amethyst;
-				FastLED.show();
-				delay(20);
-				leds[i]=oldcolor;
-				FastLED.show();
-				delay(20);
-
-			}
+		for(int i = (NUM_LEDS-1); i >= 0; i--) {
+			// Set the i'th led to red
+			CRGB oldcolor = leds[i];
+			leds[i] = CRGB::Amethyst;
 			FastLED.show();
+			delay(20);
+			leds[i]=oldcolor;
+			FastLED.show();
+			delay(20);
+
 		}
+		FastLED.show();
 	}
 
 	unsigned long now = millis();
