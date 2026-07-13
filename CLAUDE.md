@@ -114,6 +114,14 @@ fresh Home Assistant update.
   `onMqttMessage`) and the point of use (`lit_leds` constrained to
   `[0,NUM_LEDS]` in `loop()`, defense in depth in case the first clamp is
   ever bypassed by a future edit).
+- The `lit_leds` calculation also hardcoded a literal `40` instead of
+  referencing `NUM_LEDS` — harmless today since they match, but would
+  silently go stale if `NUM_LEDS` (and the physical strip length) is ever
+  changed without updating that literal too. Confirmed the strip really
+  is 40 LEDs (matches `NUM_LEDS` and the README), so `NUM_LEDS` itself
+  wasn't wrong — just made the math derive from it instead of duplicating
+  the value, so changing `NUM_LEDS` alone is enough to support a
+  different strip length in the future.
 
 ## Known rough edges still open (not fixed here)
 

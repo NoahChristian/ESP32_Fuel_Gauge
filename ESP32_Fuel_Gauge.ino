@@ -236,7 +236,7 @@ unsigned long currentTime = millis();
 void loop() {
 	// First slide the led in one direction
 	if (f_SoC != last_SoC_drawn){
-		lit_leds = (uint8_t) constrain(40 * f_SoC/100, 0, NUM_LEDS); //defense in depth: never write past leds[] even if f_SoC's clamp is ever bypassed
+		lit_leds = (uint8_t) constrain(NUM_LEDS * f_SoC/100, 0, NUM_LEDS); //derives from NUM_LEDS (currently 40) instead of a hardcoded literal, so this stays correct if the strip length ever changes; constrain() is still defense in depth against f_SoC's clamp ever being bypassed
 		for(int i = 0; i < NUM_LEDS; i++) {
 			// Set the i'th led to red
 			leds[i] = CRGB::DarkRed;
