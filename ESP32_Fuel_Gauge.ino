@@ -37,8 +37,6 @@
 const char ssid[] = SECRET_SSID;
 const char password[] = SECRET_PASS;
 
-unsigned long lastMillis = 0;
-
 using namespace fl;
 uint8_t verbosity = 255;
 bool trace = true;
@@ -63,13 +61,9 @@ const char subtopic1[]  = "V1.0/Home/Battery/SoC";
 const char subtopic2[]  = "V1.0/Home/Battery/Action";
 const char subtopic3[]  = "V1.0/Home/Battery/Brightness";
 
-//set interval for sending messages (milliseconds)
-const long interval = 5000;
-unsigned long previousMillis = 0;
-
-int count = 0;
 float f_SoC = 0.0;
-uint8_t blue =0;
+float last_SoC_drawn = -1.0; //separate from f_SoC so f_SoC always stays a true 0-100 percentage
+uint8_t lit_leds = 0; //count of LEDs currently lit blue, derived from f_SoC each redraw
 int currentState = 0;//neither charging (1) or discharging (-1)
 //end of Mosquitto
 
@@ -175,12 +169,9 @@ void setup() {
 } //setup
 
 void onMqttMessage(int messageSize) {
-  //TODO: because MQTT could send a huge string, this should be made to prevent overruns
   char tbuf[256]="";
-  //char topic[256]="";
   int size=0;
 	String topic = mqttClient.messageTopic();
-  //strcpy(topic,mqttClient.messageTopic());
   // we received a message, print out the topic and contents
   if (verbosity > 4) {
     Serial.print("Received a message with topic '");
@@ -191,24 +182,25 @@ void onMqttMessage(int messageSize) {
   }
   if(topic.equals(subtopic1)){ //batterylevel
     // use the Stream interface to print the contents
-    while (mqttClient.available()) {
+    while (mqttClient.available() && size < (int)sizeof(tbuf) - 1) {
       tbuf[size]=(char)mqttClient.read();
-      size++;    
+      size++;
     }
+    while (mqttClient.available()) mqttClient.read(); //discard anything beyond tbuf's capacity so the next message stays in sync
     tbuf[size]=NULL;
     if (verbosity > 4) Serial.print(String(tbuf));
     if (verbosity > 4) Serial.println();
     //set number based on input
     f_SoC = String(tbuf).toFloat();
     if (trace) {Serial.print("f_SoC = "); Serial.println(f_SoC,3);}
-    //b_New_SoC = true;
   }
   if(topic.equals(subtopic2)){
     // use the Stream interface to print the contents
-    while (mqttClient.available()) {
+    while (mqttClient.available() && size < (int)sizeof(tbuf) - 1) {
       tbuf[size]=(char)mqttClient.read();
-      size++;    
+      size++;
     }
+    while (mqttClient.available()) mqttClient.read();
     tbuf[size]=NULL;
     if (verbosity > 4) Serial.print(String(tbuf));
     if (verbosity > 4) Serial.println();
@@ -219,55 +211,48 @@ void onMqttMessage(int messageSize) {
 		} else if (!strcmp(tbuf,"Idle")){
 			currentState = 0;
       if (trace) {Serial.print(currentState); Serial.println(" set\n");}
-		}		
+		}
   }
   if(topic.equals(subtopic3)){
     // use the Stream interface to print the contents
-    while (mqttClient.available()) {
+    while (mqttClient.available() && size < (int)sizeof(tbuf) - 1) {
       tbuf[size]=(char)mqttClient.read();
-      size++;    
+      size++;
     }
+    while (mqttClient.available()) mqttClient.read();
     tbuf[size]=NULL;
     if (verbosity > 4) Serial.print(String(tbuf));
     if (verbosity > 4) Serial.println();
     //set number based on input
     f_bright = String(tbuf).toFloat();
     if (trace) {Serial.print("f_bright = "); Serial.println(f_bright,3);}
-    //b_New_SoC = true;
   }
 
 } //onMqttMessage
 
-//void fadeall() { for(int i = 0; i < NUM_LEDS; i++) { leds[i].nscale8(250); } }
 unsigned long currentTime = millis();
 
 void loop() {
-	//uint8_t bar = random(100); 
-	static uint8_t hue = 30;
-	//Serial.print(bar);
 	// First slide the led in one direction
-	if (f_SoC != blue){
-		blue = (uint8_t) 40 * f_SoC/100;
+	if (f_SoC != last_SoC_drawn){
+		lit_leds = (uint8_t) (40 * f_SoC/100);
 		for(int i = 0; i < NUM_LEDS; i++) {
-			// Set the i'th led to red 
+			// Set the i'th led to red
 			leds[i] = CRGB::DarkRed;
 		}
-		//FastLED.show();//optional show? 
-	
-		for(int i = 0; i < blue; i++) {
-			// Set the i'th led to red 
+		for(int i = 0; i < lit_leds; i++) {
+			// Set the i'th led to red
 			leds[i] = CRGB::MidnightBlue;
 		}
 		FastLED.show();
-		f_SoC = (float) blue;
+		last_SoC_drawn = f_SoC;
 	}
 	if (currentState == 1){
-		//discharging
+		//charging
 		for(int j=0; j<1; j++){
 			for(int i = 0; i < NUM_LEDS; i++) {
-				// Set the i'th led to red 
+				// Set the i'th led to red
 				CRGB oldcolor = leds[i];
-				//leds[i] = CHSV(hue++, 255, 255);
 				leds[i] = CRGB::Yellow;
 				FastLED.show();
 				delay(20);
@@ -275,24 +260,23 @@ void loop() {
 				FastLED.show();
 				delay(20);
 			}
-			FastLED.show(); 
+			FastLED.show();
 		}
 	}
 
 	if (currentState == -1){
-		//charging
+		//discharging
 		for(int j=0; j<1; j++){
 			for(int i = (NUM_LEDS-1); i >= 0; i--) {
-				// Set the i'th led to red 
+				// Set the i'th led to red
 				CRGB oldcolor = leds[i];
-				//leds[i] = CHSV(hue++, 255, 255);
 				leds[i] = CRGB::Amethyst;
 				FastLED.show();
 				delay(20);
 				leds[i]=oldcolor;
 				FastLED.show();
 				delay(20);
-				
+
 			}
 			FastLED.show();
 		}
