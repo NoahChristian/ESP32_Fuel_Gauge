@@ -1,6 +1,23 @@
 // ESP32 Fuel Gauge with MQTT and FastLED
 // Written by Noah Christian 2026 (C) 2026
 //
+// MIT License
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software. 
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+// IN NO EVENT SHALL THE AUTHOR OR COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. 
+//
+// Acknowledgment: This code is based on the work of various contributors in the ESP32 and Arduino communities.
+//
+// Board Target: ESP32 Dev Module
+//
 // This code connects to a Wi-Fi network, subscribes to MQTT topics, and controls an LED strip based on battery state of charge (SoC) and charging status.
 // It uses the FastLED library to manage the LED strip and the ArduinoMqttClient library for MQTT communication.
 // Make sure to define your Wi-Fi credentials and MQTT broker details in the arduino_secrets.h file.
@@ -28,6 +45,8 @@
 // Upon the first run, the LED strip is off until messages are received from Home Assistant.
 // Some values such as the number of LED's, colors, etc can be changed but are currently hardcoded.
 //
+// Version 1.1 - Added polling and reconnect for wifi and MQTT, restart if cannot connect
+//
 
 #include <FastLED.h>
 #include <WiFi.h>
@@ -37,15 +56,24 @@
 const char ssid[] = SECRET_SSID;
 const char password[] = SECRET_PASS;
 
-using namespace fl;
+//using namespace fl;
+
+#define MS_TIME unsigned long
+#define WIFI_INTERVAL 1*60000 //Poll and reconnect if needed every 1 minutes
+
 uint8_t verbosity = 255;
 bool trace = true;
 
-float f_bright = 20;
+float f_bright = 0; //start with lights off until valid levels
 float last_bright = 0;
 
-// Connection timeout in seconds
-const unsigned long WIFI_TIMEOUT = 15;
+// Connection timeouts in seconds; other times
+MS_TIME wifiReconnected = 0;
+MS_TIME startAttemptTime = 0;
+MS_TIME currentTime = millis();
+MS_TIME tickPoll = millis();
+const MS_TIME WIFI_TIMEOUT = 15; //timeout in sec
+const MS_TIME MQTT_TIMEOUT = 15;
 
 //MQTT (Message Queuing Telemetry Transport)
 //create the objects
@@ -79,16 +107,27 @@ int currentState = 0;//neither charging (1) or discharging (-1)
 // Define the array of leds
 CRGB leds[NUM_LEDS];
 
+
+//Non-blocking charge/discharge sweep animation state. Replaces the old delay()-based
+//  version, which blocked loop() (and therefore mqttClient.poll()) for up to ~1.6s per
+//  sweep -- during most of an active charge/discharge cycle, incoming MQTT messages just
+//  sat unprocessed. Same visual result (same colors, same 20ms-per-LED pacing, same sweep
+//  direction), but loop() now returns every pass instead of blocking inside it.
+int anim_i = -1;          //current LED index mid-sweep; -1 = not running / needs (re)start
+uint8_t anim_step = 0;    //0 = about to light anim_i, 1 = about to restore it and advance
+int anim_dir_state = 0;   //currentState this sweep belongs to, so a charge<->discharge flip restarts cleanly
+MS_TIME anim_last_ms = 0;
+const MS_TIME ANIM_STEP_MS = 20; //matches the original delay(20) per phase
+
 void connectToWiFi(void){
   Serial.println("\nConnecting to Wi-Fi...");
   WiFi.mode(WIFI_STA); // Station mode (connect to existing network)
   WiFi.begin(ssid, password);
 
-  unsigned long startAttemptTime = millis();
+  startAttemptTime = millis();
 
   // Attempt to connect until timeout
-  while (WiFi.status() != WL_CONNECTED &&
-         millis() - startAttemptTime < WIFI_TIMEOUT * 1000) {
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < WIFI_TIMEOUT * 1000) {
     Serial.print(".");
     delay(500);
   }
@@ -104,39 +143,30 @@ void connectToWiFi(void){
   }
 } //connectToWiFi
 
-void setup() { 
-	Serial.begin(115200);
-	//needs a delay to get started
-	delay(1000);
-  while (!Serial) {
-    ; // Wait for Serial to be ready
-  }
-	Serial.println("resetting");
-
-	Serial.print("RESET");
-
-	connectToWiFi();
-//  WiFi.begin(ssid, password);
-
-
+void connectToMQTT(void){
 	if (verbosity > 0) {
     Serial.print("Attempting to connect to the MQTT broker: ");
     Serial.println(broker);
   }
-  
+
   mqttClient.setUsernamePassword(MQTT_USERNAME, MQTT_PASSWORD);
+  startAttemptTime = millis();
+  while (!mqttClient.connect(broker, port) && millis() - startAttemptTime < MQTT_TIMEOUT * 1000){
+    Serial.print(".");
+    delay(500);
+  }
+  
   if (!mqttClient.connect(broker, port)) {
     if (verbosity > 0) Serial.print("MQTT connection failed! Error code = ");
     if (verbosity > 0) Serial.println(mqttClient.connectError());
-
-    while (1);
+    delay(5000);
+    ESP.restart();
   }
 
   if (verbosity > 0) Serial.println("You're connected to the MQTT broker!");
-  
-  // set the message receive callback
-  mqttClient.onMessage(onMqttMessage);
+}
 
+void SubscribeToMQTT(void){
   // Subscribe to a topic
   if (verbosity > 0) {
     Serial.print("Subscribing to topic: ");
@@ -163,10 +193,7 @@ void setup() {
   }
   // // subscribe to a topic
   mqttClient.subscribe(subtopic3);
-
-	FastLED.addLeds<WS2812,DATA_PIN,GRB>(leds,NUM_LEDS);
-	FastLED.setBrightness(f_bright);
-} //setup
+}
 
 void onMqttMessage(int messageSize) {
   char tbuf[256]="";
@@ -174,7 +201,7 @@ void onMqttMessage(int messageSize) {
 	String topic = mqttClient.messageTopic();
   // we received a message, print out the topic and contents
   if (verbosity > 4) {
-    Serial.print("Received a message with topic '");
+    Serial.print("\nReceived a message with topic '");
     Serial.print(topic);
     Serial.print("', length ");
     Serial.print(messageSize);
@@ -228,23 +255,44 @@ void onMqttMessage(int messageSize) {
     f_bright = atof(tbuf); //atof avoids a heap-allocating String just to parse a float
     if (trace) {Serial.print("f_bright = "); Serial.println(f_bright,3);}
   }
-
 } //onMqttMessage
 
-//Non-blocking charge/discharge sweep animation state. Replaces the old delay()-based
-//  version, which blocked loop() (and therefore mqttClient.poll()) for up to ~1.6s per
-//  sweep -- during most of an active charge/discharge cycle, incoming MQTT messages just
-//  sat unprocessed. Same visual result (same colors, same 20ms-per-LED pacing, same sweep
-//  direction), but loop() now returns every pass instead of blocking inside it.
-int anim_i = -1;          //current LED index mid-sweep; -1 = not running / needs (re)start
-uint8_t anim_step = 0;    //0 = about to light anim_i, 1 = about to restore it and advance
-int anim_dir_state = 0;   //currentState this sweep belongs to, so a charge<->discharge flip restarts cleanly
-unsigned long anim_last_ms = 0;
-const unsigned long ANIM_STEP_MS = 20; //matches the original delay(20) per phase
 
 CRGB baseColorFor(int i) {
   return (i < lit_leds) ? CRGB::MidnightBlue : CRGB::DarkRed;
 }
+
+void setup() { 
+	Serial.begin(115200);
+	FastLED.addLeds<WS2812,DATA_PIN,GRB>(leds,NUM_LEDS);
+	FastLED.setBrightness(f_bright);
+	//needs a delay to get started
+  delay(5000);
+  while (!Serial) {
+    ; // Wait for Serial to be ready
+  }
+	Serial.println("resetting");
+
+	Serial.print("RESET");
+
+  connectToWiFi();
+  connectToMQTT();
+  
+  // set the message receive callback
+  mqttClient.onMessage(onMqttMessage);
+
+  // Subscribe to a topic
+  if (verbosity > 0) {
+    Serial.print("Subscribing to topic: ");
+    Serial.println(subtopic1);
+    Serial.println();
+  }
+  
+  // set the message receive callback
+  mqttClient.onMessage(onMqttMessage);
+  SubscribeToMQTT();
+
+} //setup
 
 void loop() {
 	// First slide the led in one direction
@@ -287,8 +335,38 @@ void loop() {
 		if (anim_step == 1) { leds[anim_i] = baseColorFor(anim_i); FastLED.show(); }
 		anim_i = -1;
 	}
+	///MS_TIME now = millis();
+	currentTime = millis();
+	//wait a half a second and poll while going (subtraction form is rollover-safe)
+	if (currentTime - tickPoll > 500){
+		mqttClient.poll();
+		//delay(10);
+		tickPoll = millis();
+    if (verbosity>128) Serial.print('.');
+	}
 
-	mqttClient.poll();
+  if (currentTime - wifiReconnected >= WIFI_INTERVAL){
+    Serial.println("\nRepolling WiFi/MQTT Status...");
+    if ( (WiFi.status() != WL_CONNECTED) || (!mqttClient.connected()) ) {
+      Serial.println("Reconnecting to WiFi...");
+      WiFi.disconnect();
+      WiFi.reconnect();
+      Serial.print("WiFi Reconnected: ");
+      Serial.println(WiFi.localIP());
+      connectToMQTT();
+      SubscribeToMQTT();
+      Serial.println("MQTT reconnected and re-subscribed");
+    }
+    else
+    {
+      Serial.print("WiFi and MQTT Healthy IP: ");
+      Serial.println(WiFi.localIP()); 
+    }
+    wifiReconnected = millis();
+  }
+
+	//mqttClient.poll();
+  //Serial.print(".");
 
 	if (f_bright != last_bright){
 		FastLED.setBrightness((uint8_t) f_bright*2.55);
