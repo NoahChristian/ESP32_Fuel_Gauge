@@ -65,7 +65,7 @@ uint8_t verbosity = 255;
 bool trace = true;
 
 float f_bright = 0; //start with lights off until valid levels
-float last_bright = 0;
+float last_bright = -1; //trigger a command, but not used to set level
 
 // Connection timeouts in seconds; other times
 MS_TIME wifiReconnected = 0;
@@ -249,8 +249,7 @@ void onMqttMessage(int messageSize) {
     }
     while (mqttClient.available()) mqttClient.read();
     tbuf[size]=NULL;
-    if (verbosity > 4) Serial.print(String(tbuf));
-    if (verbosity > 4) Serial.println();
+    if (verbosity > 4) Serial.println(String(tbuf));
     //set number based on input
     f_bright = atof(tbuf); //atof avoids a heap-allocating String just to parse a float
     if (trace) {Serial.print("f_bright = "); Serial.println(f_bright,3);}
@@ -373,6 +372,6 @@ void loop() {
 		last_bright = f_bright;
 	}
 
-	delay(1); //small yield now that loop() is otherwise unthrottled
+	delay(10); //small yield now that loop() is otherwise unthrottled
 } //loop
 
